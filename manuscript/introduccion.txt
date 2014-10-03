@@ -1,1 +1,2 @@
-# Introducción
+# Introducción a openLDAP
+[openLDAP]() es un servicio de directorio, implementación del protocolo LDAPv3, de fuente abierta y liberado bajo licencia BSD.

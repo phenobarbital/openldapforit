@@ -1,1 +1,1074 @@
-# Capitulo 1
+# Instalación y Configuración de OpenLDAP
+
+Glosario:
+---------
+
+**Backend**: Hace referencia a lo que está detrás, ejemplo, cuando hacemos referencia al "backend del árbol" estamos haciendo referencia su configuración (olcDatabase)
+**Overlay**: Módulo que modifica el comportamiento y/o incorpora nuevas características sobre un árbol LDAP existente.
+**DN**: Nombre distinguido de una entrada, viene del inglés "Distinguised Name"
+**base DN**: Base de búsqueda distinguida, en general, hace referencia a la base del árbol (raíz).
+**RDN**: Relative Distinguised Name, nombre de una entrada, excluyendo la base DN.
+**olc**: prefijo que lleva todo atributo en una configuración basada en RTC.
+**RTC**: Run-Time Config, hace referencia al modo como opera openLDAP, utilizando una DB ldif para gestionar su configuración, dicha DB es modificable en tiempo de ejecución (runtime) por lo que casi nunca es necesario reiniciar el servicio.
+**RID**: Replication ID, identificador único de una conexión de réplica entre 2 servidores.
+
+Pre-instalación
+---------------
+
+Crear el directorio:
+
+``mkdir /opt/{ldap,ldif}``
+
+Instalamos los paquetes básicos:
+
+    ``aptitude install ldap-utils ssl-cert ca-certificates rsyslog lsof``
+
+Incorporamos los repositorios de Debian Jessie para tener la última versión estable de openLDAP:
+
+	cat <<E_O_APT > /etc/apt/preferences.d/wheezy.pref
+	
+	Package: slapd
+	Pin: release n=jessie
+	Pin-Priority: 400
+	
+	Package: *
+	Pin: release n=jessie
+	Pin-Priority: 100
+	
+	Package: *
+	Pin: release n=wheezy
+	Pin-Priority: 200
+	
+	Package: *
+	Pin: release n=wheezy-updates
+	Pin-Priority: 999
+	
+	Package: *
+	Pin: release n=wheezy-backports
+	Pin-Priority: 500
+	
+	E_O_APT
+
+
+Y el repositorio LDAP:
+
+Y actualizamos:
+
+apt-get update
+
+Instalación
+-----------
+
+    ``apt-get -t jessie install slapd libdb5.3 perl libldap-2.4-2 libc6 locales lmdb-utils``
+
+Durante la instalación, slapd solicitará la clave del usuario *cn=admin*.
+Al finalizar la instalación, si ningún dominio ha sido configurado, se crea un árbol básico denominado *dc=nodomain*.
+
+Restart services during package upgrades without asking?                                                                                                           
+``│                      <Yes>                                                     <No>             │``
+
+Responder Yes.
+
+- Indicar la contraseña del administrador.
+
+- Verificar el servicio luego de instalado:
+
+``service slapd restart``
+[ ok ] Stopping OpenLDAP: slapd.
+[ ok ] Starting OpenLDAP: slapd.
+
+``slaptest -u -F /etc/ldap/slapd.d``
+
+config file testing succeeded
+
+Y el servidor openLDAP queda instalado.
+
+### Habilitar Módulos
+
+Incorporar el modulo back_mdb y otros módulos requeridos:
+
+	ldapadd -H ldapi:/// -Y EXTERNAL -Q << EOF
+	dn: cn=module{0},cn=config
+	changetype: modify
+	add: olcModuleLoad
+	olcModuleload: back_mdb
+	olcModuleload: back_ldap
+	olcModuleload: syncprov
+	olcModuleload: back_monitor
+	olcModuleload: accesslog
+	olcModuleload: auditlog
+	olcModuleload: unique
+	olcModuleload: dynlist
+	olcModuleload: refint
+	olcModuleload: constraint
+	olcModuleload: ppolicy
+	olcModuleload: valsort
+	olcModuleload: memberof
+	EOF
+
+
+### Usando MDB
+
+- Detener el servicio:
+
+``service slapd stop``
+
+Crear el archivo:
+
+	cat <<EOF > /opt/ldif/backend.ldif
+	dn: olcBackend={1}mdb,cn=config
+	objectClass: olcBackendConfig
+	olcBackend: {1}mdb
+	EOF
+
+
+- cargar el archivo:
+
+``slapadd -F /etc/ldap/slapd.d -n0 -l /opt/ldif/backend.ldif``
+
+- re-aplicar el propietario:
+
+``chown openldap.openldap /etc/ldap/slapd.d -R``
+
+- Volver a iniciar:
+
+``service slapd start``
+
+Configuración DIT primario
+--------------------------
+
+Crear el directorio para el árbol:
+
+mkdir -p /opt/ldap/cantv
+
+chown openldap.openldap /opt/ldap/cantv -R
+
+Y cargamos la definición básica del backend del árbol:
+
+	ldapadd -H ldapi:/// -Y EXTERNAL -Q << EOF
+	dn: olcDatabase=mdb,cn=config
+	changetype: add
+	objectClass: olcDatabaseConfig
+	objectClass: olcMdbConfig
+	olcDatabase: mdb
+	olcDbDirectory: /opt/ldap/cantv
+	olcSuffix: dc=cantv,dc=com,dc=ve
+	olcRootDN: cn=admin,dc=cantv,dc=com,dc=ve
+	olcRootPW: {SSHA}odoNtIGCh1HrVDvT+R7o0KKifjvRMbMp
+	olcDbIndex: objectClass eq
+	olcAccess: {0}to attrs=userPassword,shadowLastChange by self write by anonymous auth by dn="cn=admin,dc=cantv,dc=com,dc=ve" manage by * none
+	olcAccess: {1}to dn.base="" by * read
+	olcAccess: {2}to * by self write by dn="cn=admin,dc=cantv,dc=com,dc=ve" write by * read
+	olcLastMod: TRUE
+	olcReadOnly: FALSE
+	olcSizeLimit: 500
+	olcTimeLimit: 100
+	EOF
+
+
+Nota: la clave es "123456".
+
+Y cargamos el DIT (Directory Information Tree) básico:
+
+archivo: /opt/ldif/dit.ldif
+
+	dn: dc=cantv,dc=com,dc=ve
+	objectClass: top
+	objectClass: dcObject
+	objectClass: organization
+	o: cantv.com.ve
+	dc: cantv 
+	
+	dn: cn=admin,dc=cantv,dc=com,dc=ve
+	objectClass: simpleSecurityObject
+	objectClass: organizationalRole
+	cn: admin
+	description: LDAP administrator
+	userPassword: {SSHA}odoNtIGCh1HrVDvT+R7o0KKifjvRMbMp
+	
+	dn: ou=hosts,dc=cantv,dc=com,dc=ve
+	objectClass: top
+	objectClass: organizationalUnit
+	ou: hosts
+	description: CANTV hosts
+	
+	dn: ou=groups,dc=cantv,dc=com,dc=ve
+	objectClass: top
+	objectClass: organizationalUnit
+	ou: groups
+	description: Group definition for CANTV
+	
+	dn: ou=people,dc=cantv,dc=com,dc=ve
+	objectClass: top
+	objectClass: organizationalUnit
+	ou: people
+	description: CANTV users
+
+
+Y cargamos (con el usuario cn=admin del backend correspondiente):
+
+``ldapadd -H ldapi:/// -x -D cn=admin,dc=cantv,dc=com,dc=ve -W -f /opt/ldif/dit.ldif``
+
+Y en este momento ya tenemos un árbol sencillo para el dominio cantv.com.ve
+
+Post-Configuración
+------------------
+
+### Configuración básica de cn=config
+
+	ldapadd -H ldapi:/// -Y EXTERNAL -Q << EOF
+	dn: cn=config
+	changetype: modify
+	replace: olcAttributeOptions
+	olcAttributeOptions: lang-
+	-
+	replace: olcPasswordHash
+	olcPasswordHash: {SSHA}
+	-
+	replace: olcToolThreads
+	olcToolThreads: 8
+	-
+	replace: olcThreads
+	olcThreads: 32
+	-
+	replace: olcSockbufMaxIncoming
+	olcSockbufMaxIncoming: 262143
+	-
+	replace: olcSockbufMaxIncomingAuth
+	olcSockbufMaxIncomingAuth: 16777215
+	-
+	replace: olcReadOnly
+	olcReadOnly: FALSE
+	-
+	replace: olcReverseLookup
+	olcReverseLookup: FALSE
+	EOF
+
+
+### Configuracion de olcDatabase(0)
+
+	ldapadd -H ldapi:/// -Y EXTERNAL -Q << EOF
+	dn: olcDatabase={0}config,cn=config
+	changetype: modify
+	replace: olcRootPW
+	olcRootPW:  {SSHA}odoNtIGCh1HrVDvT+R7o0KKifjvRMbMp
+	-
+	replace: olcAccess
+	olcAccess: {0}to * by dn.exact=gidNumber=0+uidNumber=0,cn=peercred,cn=external,cn=auth manage by dn.exact="cn=admin,dc=cantv,dc=com,dc=ve" manage by * break
+	olcAccess: {1}to dn="" by * read
+	olcAccess: {2}to dn.subtree="" by * read
+	olcAccess: {3}to dn="cn=Subschema" by * read
+	EOF
+
+
+### Optimización del Backend
+
+El backend MDB requiere optimización y configuración adicional, sobre todo porque su tamaño máximo es un valor estático a ser definido previamente (el backend mdb no se redimensiona al alcanzar su tamaño máximo).
+
+	ldapadd -H ldapi:/// -Y EXTERNAL -Q << EOF
+	dn: olcDatabase={2}mdb,cn=config
+	changetype: modify
+	replace: olcDbMaxSize
+	olcDbMaxSize: 2147483648
+	EOF
+
+
+Nota: el valor es en bytes, el valor definido acá es de 2GB.
+
+Un conjunto de optimizaciones adicionales van en referencia a en modo operacional de la DB, el tamaño del stack de búsqueda.
+
+	ldapadd -H ldapi:/// -Y EXTERNAL -Q << EOF
+	dn: olcDatabase={2}mdb,cn=config
+	changetype: modify
+	replace: olcDbCheckpoint
+	olcDbCheckpoint: 1024 30
+	-
+	replace: olcMaxDerefDepth
+	olcMaxDerefDepth: 15
+	-
+	replace: olcSyncUseSubentry
+	olcSyncUseSubentry: FALSE
+	-
+	replace: olcDbMaxReaders
+	olcDbMaxReaders: 0
+	-
+	replace: olcDbMode
+	olcDbMode: 0600
+	-
+	replace: olcDbSearchStack
+	olcDbSearchStack: 32
+	-
+	replace: olcDbNoSync
+	olcDbNoSync: TRUE
+	-
+	replace: olcDbEnvFlags
+	olcDbEnvFlags: {0}writemap
+	olcDbEnvFlags: {1}nometasync
+	EOF
+
+
+*olcDbNoSync* sirve para que los cambios en memoria no se sincronicen inmediatamente a la DB on-disk, esto es útil para mejorar el performance del openLDAP, a costa de integridad de los datos.
+
+NOTA: el tamaño del stack en equipos de 64 bits es de 8 a 16MB de memoria por thread (proceso), es un valor limitado por el stack del sistema operativo (ver: ulimit -s), dicho valor está limitado a:
+
+	ulimit -s
+	8192
+
+Y debe ser modificado en el sistema operativo si se requiere más memoria por proceso para las búsquedas.
+
+	# configure limits
+	cat <<EOF > /etc/security/limits.d/stack.conf
+	# nofile
+	root               soft    nofile            287573
+	root               hard    nofile            287573
+	*               soft    nofile            287573
+	*               hard    nofile            287573
+	# stack
+	root            soft    stack            16384
+	root            hard    stack            16384
+	*               soft    stack            16384
+	*               hard    stack            16384
+	EOF
+
+
+Configuración general del Backend MDB
+
+	ldapadd -H ldapi:/// -Y EXTERNAL -Q << EOF
+	dn: olcDatabase={2}mdb,cn=config
+	changetype: modify
+	replace: olcLastMod
+	olcLastMod: TRUE
+	-
+	replace: olcAddContentAcl
+	olcAddContentAcl: TRUE
+	-
+	replace: olcReadOnly
+	olcReadOnly: FALSE
+	-
+	replace: olcSizeLimit
+	olcSizeLimit: 2000
+	-
+	replace: olcTimeLimit
+	olcTimeLimit: 60
+	-
+	replace: olcMonitoring
+	olcMonitoring: TRUE
+	EOF
+
+
+Monitoreo
+---------
+
+Habilitar cn=monitor y cn=accesslog nos permite tanto monitorizar cambios como auditar accesos, modificaciones y otras actividades ocurridas contra el árbol LDAP.
+
+### cn=monitor
+
+Muestra estadísticas del árbol LDAP, uso, búsquedas, conexiones, tipos de entradas entre otro tipo de estadísticas en tiempo real.
+
+Cargamos el DIT del cn=monitor
+
+archivo: /opt/ldif/monitor.ldif
+
+	dn: olcDatabase=monitor,cn=config
+	objectClass: olcDatabaseConfig
+	olcDatabase: monitor
+	olcAccess: {0}to * by dn.exact="cn=admin,dc=cantv,dc=com,dc=ve" write by * none
+	olcAccess: {1}to dn.subtree="cn=monitor" by dn.exact="cn=admin,dc=cantv,dc=com,dc=ve" write by users read by * none
+	olcAccess: {2}to dn.children="cn=monitor" by dn.exact="cn=admin,dc=cantv,dc=com,dc=ve" write by * none
+	olcLastMod: TRUE
+	olcMaxDerefDepth: 15
+	olcReadOnly: FALSE
+	olcRootDN: cn=config
+	olcMonitoring: TRUE
+
+
+Cargamos:
+    ``ldapadd -H ldapi:/// -Y EXTERNAL -Q -f /opt/ldif/monitor.ldif``
+
+### cn=accesslog
+Muestra el acceso para búsqueda, conexión y edición que cualquier usuario realiza sobre el árbol LDAP.
+
+Creamos el directorio de la DB accesslog:
+
+``mkdir -p /opt/ldap/cantv/accesslog``
+
+Se copia DB_CONFIG al directorio:
+``cp -p /var/lib/ldap/DB_CONFIG /opt/ldap/cantv/accesslog``
+
+Propietario y grupo:
+``chown openldap.openldap /opt/ldap/cantv/accesslog -R``
+
+Cargamos la DB de accesslog:
+
+	ldapadd -H ldapi:/// -Y EXTERNAL -Q << EOF
+	dn: olcDatabase={3}hdb,cn=config
+	objectClass: olcDatabaseConfig
+	objectClass: olcHdbConfig
+	olcDatabase: {3}hdb
+	olcDbDirectory: /opt/ldap/cantv/accesslog
+	olcSuffix: cn=accesslog
+	olcRootDN: cn=admin,dc=cantv,dc=com,dc=ve
+	olcDbIndex: default eq
+	olcDbIndex: entryCSN,objectClass,reqEnd,reqResult,reqStart
+	EOF
+
+
+Y Cargamos el overlay accesslog al backend del árbol a monitorizar:
+
+	ldapadd -H ldapi:/// -Y EXTERNAL -Q << EOF
+	dn: olcOverlay=accesslog,olcDatabase={2}mdb,cn=config
+	changetype: add
+	objectClass: olcOverlayConfig
+	objectClass: olcAccessLogConfig
+	olcOverlay: accesslog
+	olcAccessLogDB: cn=accesslog
+	olcAccessLogOps: writes
+	olcAccessLogSuccess: TRUE
+	olcAccessLogPurge: 07+00:00  01+00:00
+	EOF
+
+
+*olcAccessLogPurge* nos permite definir que las entradas más viejas se purgen luego de 7 días, a la medianoche.
+
+### auditlog
+Auditlog es un overlay de auditoría, genera bloques LDIF de toda operación de modificación que ocurra dentro del árbol LDAP.
+
+Creamos el archivo
+touch /opt/ldap/cantv/audit.ldif
+
+Propietario y grupo:
+chown openldap.openldap /opt/ldap/cantv/audit.ldif
+
+Y cargamos la regla de auditoría al backend del árbol a monitorizar:
+
+	ldapadd -H ldapi:/// -Y EXTERNAL -Q << EOF
+	dn: olcOverlay=auditlog,olcDatabase={2}mdb,cn=config
+	changetype: add
+	objectClass: olcOverlayConfig
+	objectClass: olcAuditLogConfig
+	olcOverlay: auditlog
+	olcAuditlogFile: /opt/ldap/cantv/audit.ldif
+	EOF
+
+
+Logging
+-------
+
+OpenLDAP, sobre todo en entornos de pruebas, suele generar bastante información en los logs, podemos modificar openLDAP para que los logs sean enviados (gracias a rsyslog) a otro punto e incluso a un servidor remoto usando remote-syslogging.
+
+[OpenLDAP]() transmite a través del logging facility 4.
+
+Creamos el directorio para los logs:
+
+	mkdir -p /var/log/slapd
+	chmod 750 /var/log/slapd/
+	chown openldap:openldap /var/log/slapd/ -R
+
+
+Y eliminamos cualquier referencia a local4 en el rsyslog:
+
+``sed -i "/local4.*/d" /etc/rsyslog.conf``
+
+Incorporamos local4 al rsyslog
+
+	cat >> /etc/rsyslog.conf << EOF
+	local4.*                        /var/log/slapd/slapd.log
+	EOF
+
+
+Y reiniciamos rsyslog
+
+``service rsyslog restart``
+
+En este momento, ya podemos indicar al openLDAP que usaremos dicho archivo para logs y modificaremos el nivel de logging a 392 (conn, stats y acl)
+
+	ldapadd -H ldapi:/// -Y EXTERNAL -Q << EOF
+	dn: cn=config
+	changetype:modify
+	replace: olcLogFile
+	olcLogFile: /var/log/slapd/slapd.log
+	-
+	replace: olcLogLevel
+	olcLogLevel: config stats shell acl
+	EOF
+
+
+Ahora, procedemos a configurar la rotación de los logs (logrotate):
+
+	cat <<EOF > /etc/logrotate.d/slapd
+	/var/log/slapd/slapd.log {
+	        daily
+	        missingok
+	        rotate 7
+	        compress
+	        copytruncate
+	        notifempty
+	        create 640 openldap openldap
+	}
+
+
+Con esto indicamos una rotación diaria, con 7 días de históricos.
+
+Módulos (Overlays)
+------------------
+
+Los módulos u overlays son plugins o características adicionales que se le pueden incoporar al servidor y/o a un árbol especifico para ampliar sus características, por ejemplo, agregando integridad referencial, criterios de unicidad, control de políticas de contraseñas, etc.
+
+NOTA IMPORTANTE: la mecánica de RTC (Runtime Config) no valida que un overlay ya está cargado (ya que pudieran tener configuraciones distintas bajo un mismo árbol) por lo que hay que tener mucho cuidado de ejecutar una operación de carga de un overlay más de una vez.
+
+### Refint (Referential Integrity)
+
+Permite definir reglas de integridad referencial, esto es, que atributos que hagan referencia a otros atributos/dn, entonces ese valor debe existir.
+
+	ldapadd -H ldapi:/// -Y EXTERNAL -Q << EOF
+	dn: olcOverlay=refint,olcDatabase={2}mdb,cn=config
+	changetype: add
+	objectClass: olcRefintConfig
+	objectClass: olcOverlayConfig
+	objectClass: olcConfig
+	objectClass: top
+	olcOverlay: refint
+	olcRefintAttribute: member
+	olcRefintAttribute: uniqueMember
+	olcRefintNothing: cn=admin,dc=cantv,dc=com,dc=ve
+	EOF
+
+
+Por ejemplo, *member* hace referencia al dn de un usuario, con refint activado para "member", dichos usuarios deben existir.
+
+### Unique Constraint
+
+Al igual que en una base de datos relacional convencional, se pueden definir ciertos criterios de unicidad, dichos criterios combinan un filtro ldap (ej: un nombre de un objectclass) y una ruta de búsqueda.
+
+	ldapadd -H ldapi:/// -Y EXTERNAL -Q << EOF
+	dn: olcOverlay=unique,olcDatabase={2}mdb,cn=config
+	objectClass: olcOverlayConfig
+	objectClass: olcUniqueConfig
+	olcOverlay: unique
+	olcUniqueURI: ldap:///ou=people,dc=cantv,dc=com,dc=ve?mail,employeeNumber?one?(objectClass=inetOrgPerson)
+	olcUniqueURI: ldap:///ou=groups,dc=cantv,dc=com,dc=ve?gidNumber?one?(objectClass=posixGroup)
+	olcUniqueURI: ldap:///ou=people,dc=cantv,dc=com,dc=ve?uidNumber,uid?one?(objectClass=posixAccount)
+	EOF
+
+
+Esta regla de *olcUniqueURI *define que en la rama ou=people, los atributos mail y employeeNumber y uid serán únicos.
+
+### Constraint
+
+Con el constraint overlay, se pueden crear expresiones o reglas que se verifican contra el contenido de un atributo, por ejemplo, si se puede aplicar una expresión regular.
+
+	ldapadd -H ldapi:/// -Y EXTERNAL -Q << EOF
+	dn: olcOverlay=constraint,olcDatabase={2}mdb,cn=config 
+	changetype: add
+	objectClass: olcOverlayConfig
+	objectClass: olcConstraintConfig
+	olcOverlay: constraint
+	olcConstraintAttribute: jpegPhoto size 131072
+	olcConstraintAttribute: uidNumber regex ^[[:digit:]]+$
+	olcConstraintAttribute: gidNumber regex ^[[:digit:]]+$
+	EOF
+
+
+### MemberOf
+
+*Memberof* permite crear grupos dinámicos a partir de la construcción de filtros, por ejemplo, con una entrada groupOfNames que defina un filtro que busque a determinadas personas, dicho grupo será dinámico.
+
+	ldapadd -H ldapi:/// -Y EXTERNAL -Q << EOF
+	dn: olcOverlay=memberof,olcDatabase={2}mdb,cn=config
+	changetype: add
+	objectClass: olcMemberOf
+	objectClass: olcOverlayConfig
+	objectClass: olcConfig
+	objectClass: top
+	olcOverlay: memberof
+	olcMemberOfDangling: ignore
+	olcMemberOfRefInt: TRUE
+	olcMemberOfGroupOC: groupOfNames
+	olcMemberOfMemberAD: member
+	olcMemberOfMemberOfAD: memberOf
+	EOF
+
+
+### Dynamic Listing
+
+Dynamic Listing es una forma más genérica de memberOf, y permite crear listas dinámicas, que devuelven atributos dinámicos a partir de un filtro de búsqueda, por ejemplo, se pueden retornar una lista de todos los correos electrónicos de cuentas de tipo inetOrgPerson.
+
+Cargamos el schema:
+
+ldapadd -H ldapi:/// -Y EXTERNAL -Q -f /etc/ldap/schema/dyngroup.ldif
+
+Y su configuración:
+
+	ldapadd -H ldapi:/// -Y EXTERNAL -Q << EOF
+	dn: olcOverlay=dynlist,olcDatabase={2}mdb,cn=config 
+	changetype: add
+	objectClass: olcOverlayConfig
+	objectClass: olcDynamicList
+	olcOverlay: dynlist
+	olcDLattrSet: {0}labeledURIObject labeledURI memberUid:uid
+	olcDLattrSet: {1}groupOfNames labeledURI member
+	EOF
+
+
+En el ejemplo actual, una entrada de tipo "groupOfNames" con un filtro en el atributo "labeledURI", retornará los dn como miembros en el atributo "member".
+
+### ValSort
+
+Valsort permite definir criterios de ordenamiento automático de las entradas durante las búsquedas.
+
+	ldapadd -H ldapi:/// -Y EXTERNAL -Q << EOF
+	dn: olcOverlay=valsort,olcDatabase={2}mdb,cn=config 
+	changetype: add
+	objectClass: olcOverlayConfig
+	objectClass: olcValSortConfig
+	olcOverlay: valsort
+	olcValSortAttr: memberUid ou=groups,dc=cantv,dc=com,dc=ve alpha-ascend
+	olcValSortAttr: uid ou=people,dc=cantv,dc=com,dc=ve alpha-ascend
+	olcValSortAttr: displayName ou=people,dc=cantv,dc=com,dc=ve alpha-ascend
+	EOF
+
+
+### Password Policy
+
+Password policy es un tipo especial de overlay, permite definir políticas de contraseñas, es decir, definir y hasta auto-cifrar las contraseñas de acuerdo a una serie de criterios.
+
+Incorporamos el schema necesario:
+
+ldapadd -H ldapi:/// -Y EXTERNAL -Q -f /etc/ldap/schema/ppolicy.ldif
+
+Luego, cargamos la definición del overlay en el backend del árbol:
+
+	ldapadd -H ldapi:/// -Y EXTERNAL -Q << EOF
+	dn: olcOverlay=ppolicy,olcDatabase={2}mdb,cn=config
+	changetype: add
+	objectClass: olcOverlayConfig
+	objectClass: olcPPolicyConfig
+	olcOverlay: ppolicy
+	olcPPolicyDefault: cn=default,ou=policies,dc=cantv,dc=com,dc=ve
+	olcPPolicyHashCleartext: TRUE
+	olcPPolicyUseLockout: FALSE
+	EOF
+
+
+Por último, incorporamos la ou=policies y el cn=default (regla de password policy por defecto):
+
+archivo: /opt/ldif/ppolicy.ldif
+
+	dn: ou=policies,dc=cantv,dc=com,dc=ve
+	objectClass: top
+	objectClass: organizationalUnit
+	ou: policies
+	description: Password Policies
+
+
+	dn: cn=default,ou=policies,dc=cantv,dc=com,dc=ve
+	cn: default
+	objectClass: pwdPolicy
+	objectClass: person
+	objectClass: top
+	pwdAllowUserChange: TRUE
+	pwdAttribute: userPassword
+	pwdCheckQuality: 2
+	pwdFailureCountInterval: 0
+	pwdGraceAuthNLimit: 5
+	pwdInHistory: 5
+	pwdLockout: TRUE
+	pwdLockoutDuration: 0
+	pwdMaxFailure: 5
+	pwdMinAge: 0
+	pwdMaxAge: 7776000
+	pwdExpireWarning: 5184000
+	pwdMinLength: 5
+	pwdMustChange: TRUE
+	pwdSafeModify: FALSE
+	sn: default policy
+
+
+Y procedemos a cargar el archivo:
+
+	ldapadd -H ldapi:/// -x -D cn=admin,dc=cantv,dc=com,dc=ve -W -f /opt/ldif/ppolicy.ldif
+	Enter LDAP Password: 
+	adding new entry "ou=policies,dc=cantv,dc=com,dc=ve"
+	
+	adding new entry "cn=default,ou=policies,dc=cantv,dc=com,dc=ve"
+
+En resumen, este password policy por defecto define las siguientes reglas:
+
+- El usuario puede cambiar su contraseña
+- El campo al que aplicarle esta política es userPassword
+- Se guardará un histórico de 5 contraseñas (si un usuario intenta colocar una contraseña que está en su historial, se bloqueará el intento de cambio)
+- con 5 fallos, la contraseña se verá bloqueada automáticamente
+- Dicha lista de fallos se reseteará a 0 únicamente ante una autenticación válida (prevención de ataques de diccionario).
+- El usuario deberá cambiar su contraseña luego de un reset ejecutado por un administrador
+- Si una cuenta es bloqueada (LockOut) esta podrá ser usada únicamente al ser desbloqueada por un administrador.
+
+Seguridad SSL - TLS - SASL
+--------------------------
+
+### SSL
+
+Instalamos la herramienta de gestión de certificados de Debian
+
+``apt-get install ssl-cert ca-certificates``
+
+Generando unos genéricos auto-firmados:
+
+``/usr/sbin/make-ssl-cert generate-default-snakeoil --force-overwrite``
+
+Dicho certificado genérico auto-firmado se encuentra en /etc/ssl/certs.
+
+Cambiamos el grupo al directorio ssl:
+
+``chgrp ssl-cert /etc/ssl/ -R``
+
+Y agregamos al usuario openLDAP al grupo "ssl-cert" para poder leer los certificados:
+
+``usermod -G ssl-cert,openldap openldap``
+
+Verificando que el usuario ya se encuentra en el grupo:
+ ``id openldap``
+*uid=114(openldap) gid=104(openldap) groups=104(openldap),105(ssl-cert)*
+
+Reiniciamos el servicio:
+
+``service slapd restart``
+
+Y hacemos uso de dicho certificado:
+
+	ldapadd -H ldapi:/// -Y EXTERNAL -Q << EOF
+	dn: cn=config
+	changetype:modify
+	replace: olcLocalSSF
+	olcLocalSSF: 71
+	-
+	replace: olcTLSCACertificatePath
+	olcTLSCACertificatePath: /etc/ssl/certs
+	-
+	replace: olcTLSCACertificateFile
+	olcTLSCACertificateFile: /etc/ssl/certs/cacert.org.pem
+	-
+	replace: olcTLSCertificateFile
+	olcTLSCertificateFile: /etc/ssl/certs/ssl-cert-snakeoil.pem
+	-
+	replace: olcTLSCertificateKeyFile
+	olcTLSCertificateKeyFile: /etc/ssl/private/ssl-cert-snakeoil.key
+	-
+	replace: olcTLSVerifyClient
+	olcTLSVerifyClient: never 
+	-
+	replace: olcTLSCipherSuite
+	olcTLSCipherSuite: +RSA:+AES-256-CBC:+SHA1
+	-
+	replace: olcTLSCRLCheck
+	olcTLSCRLCheck: none
+	EOF
+
+
+Habilitamos SSL como modo de conexión en /etc/default/slapd
+
+# archivo: /etc/default/slapd
+``sed -i "s/SLAPD_SERVICES=\"ldap:\/\/\/ ldapi:\/\/\/\"/SLAPD_SERVICES=\"ldap:\/\/\/ ldapi:\/\/\/ ldaps:\/\/\/\"/g" /etc/default/slapd``
+
+Reiniciamos el servicio:
+
+``service slapd restart``
+
+Y verificamos que está escuchando por el puerto 636:
+
+``lsof -i tcp:636``
+
+	COMMAND  PID     USER   FD   TYPE DEVICE SIZE/OFF NODE NAME
+	slapd   5776 openldap   11u  IPv4   8045      0t0  TCP *:ldaps (LISTEN)
+	slapd   5776 openldap   12u  IPv6   8046      0t0  TCP *:ldaps (LISTEN)
+
+
+Adicionalmente, podemos verificar la conexión SSL mediante openssl:
+
+``openssl s_client -connect localhost:636 -showcerts``
+
+	New, TLSv1/SSLv3, Cipher is DES-CBC3-SHA
+	Server public key is 2048 bit
+	Secure Renegotiation IS supported
+	Compression: NONE
+	Expansion: NONE
+	SSL-Session:
+	    Protocol  : TLSv1.2
+	    Cipher    : DES-CBC3-SHA
+	    Session-ID: 9C0674ED1BEEE9D790F91CDD25D67C60B41E4F2B9AA9D47985E1F4CB6D3112A0
+	    Session-ID-ctx: 
+	    Master-Key: 29FC9B902F61C6F5D843C60923BE4B4B71E5252930F0093196B8B2199728C1CD9E05B7278B98C5E7CC584F3D5AA9849F
+	    Key-Arg   : None
+	    PSK identity: None
+	    PSK identity hint: None
+	    SRP username: None
+	    Start Time: 1412140120
+	    Timeout   : 300 (sec)
+	    Verify return code: 18 (self signed certificate)
+	---
+
+
+La conexión nos ha retornado un certificado auto-firmado.
+
+Configuramos el archivo ldap.conf para utilizar el certificado CA actual:
+
+archivo: /etc/ldap/ldap.conf
+
+BASE    dc=cantv,dc=com,dc=ve
+URI     <ldaps://localhost> <ldap://localhost>
+
+SIZELIMIT       12
+TIMELIMIT       15
+DEREF           never
+
+# TLS-SSL
+TLS_CACERT  /etc/ssl/certs/cacert.org.pem
+TLS_REQCERT never
+
+Ya podemos verificar la conexión SSL usando ldapsearch:
+
+``ldapsearch -H ldaps://localhost -b dc=cantv,dc=com,dc=ve -D cn=admin,dc=cantv,dc=com,dc=ve -W -s sub '(cn=admin)' -x -LLL``
+
+### TLS
+
+Instalamos:
+
+``apt-get install gnutls-bin``
+
+Nota: su instalación es únicamente para incorporar más cifrados, TLS y SSL comparten características y atributos.
+
+``ldapsearch -x -H ldap://localhost -b dc=cantv,dc=com,dc=ve -D cn=admin,dc=cantv,dc=com,dc=ve -W -s sub '(cn=admin)' -LLL -ZZ``
+
+-ZZ inicia una negociación TLS sobre el puerto 389, forzando una respuesta correcta.
+
+### SASL
+
+Con Cyrus-SASL, openLDAP cuenta con la posibilidad de autenticar y cifrar el tráfico en alguno de los mecanismos de transporte definidos por SASL (ej: Digest-MD5).
+
+Instalamos SASL:
+
+``apt-get install sasl2-bin``
+
+Indicamos que sasl debe arrancar al inicio y que su principal mecanismo de autenticación es LDAP:
+
+``sed -i 's/START=no/START=yes/g' /etc/default/saslauthd``
+
+``sed -i "s/MECHANISMS=.*$/MECHANISMS=\"ldap pam\"/g" /etc/default/saslauthd``
+
+Generamos el archivo de configuración de SASL:
+
+	cat <<EOF > /etc/saslauthd.conf
+	ldap_servers: ldap://localhost/
+	ldap_auth_method: bind
+	ldap_bind_dn: cn=admin,dc=cantv,dc=com,dc=ve
+	ldap_bind_pw: 123456
+	ldap_version: 3
+	ldap_search_base: dc=cantv,dc=com,dc=ve
+	ldap_filter: (|(uid=%u)(cn=%u))
+	ldap_verbose: on
+	ldap_scope: sub
+	 #SASL info
+	ldap_default_realm: CANTV.COM.VE
+	ldap_use_sasl: no
+	ldap_debug: 3
+	EOF
+
+
+Aseguramos dicho archivo:
+``chmod 640 /etc/saslauthd.conf``
+
+Y reiniciamos:
+``/etc/init.d/saslauthd restart``
+
+Verificamos su autenticación correcta:
+
+	testsaslauthd -u admin -p 123456
+	0: OK "Success."
+
+
+Ahora procedemos a configurar SASL en openLDAP.
+
+	ldapadd -H ldapi:/// -Y EXTERNAL -Q << EOF
+	dn: cn=config
+	changetype:modify
+	replace: olcPasswordHash
+	olcPasswordHash: {SSHA}
+	-
+	replace: olcSaslSecProps
+	olcSaslSecProps: noplain,noanonymous,minssf=56
+	-
+	replace: olcAuthzPolicy
+	olcAuthzPolicy: none
+	-
+	replace: olcConnMaxPendingAuth
+	olcConnMaxPendingAuth: 1000
+	-
+	replace: olcSaslHost
+	olcSaslHost: $(hostname --fqdn)
+	-
+	replace: olcSaslRealm
+	olcSaslRealm: CANTV.COM.VE
+	EOF
+
+Y configuramos la forma que SASL extrae los usuarios del LDAP:
+
+	ldapadd -H ldapi:/// -Y EXTERNAL -Q << EOF
+	dn: cn=config
+	changetype: modify
+	replace: olcAuthzRegexp
+	olcAuthzRegexp: uid=(.*),cn=.*,cn=.*,cn=auth ldap:///??sub?(|(uid=$1)(cn=$1))
+	EOF
+
+Verificamos los mecanismos soportados por openLDAP:
+
+ldapsearch -x -b '' -s base -LLL supportedSASLMechanisms
+dn:
+supportedSASLMechanisms: DIGEST-MD5
+supportedSASLMechanisms: NTLM
+supportedSASLMechanisms: CRAM-MD5
+supportedSASLMechanisms: PLAIN
+supportedSASLMechanisms: LOGIN
+
+ldapsearch -H <ldap://localhost:389> -LLL -b dc=cantv,dc=com,dc=ve  -Y DIGEST-MD5 -U admin -w 123456
+
+NOTA: para la utilización de DIGEST-MD5, se requiere que la contraseña esté en texto claro ({CLEARTEXT}).
+
+Replicación
+===========
+
+Para replicación openLDAP utiliza SyncProv, un proveedor de sincronía entre diversos servidores.
+
+Vamos a configurar la réplica entre 2 servidores, ldap1 y ldap2.
+
+La definición de ámbos debe existir en los DNS o al menos, en el /etc/hosts:
+
+172.16.30.10 ldap1.devel.local ldap1
+172.16.30.11 ldap2.devel.local ldap2
+
+Cargamos la identificación de ámbos servidores (olcServerID)
+
+	ldapadd -H ldapi:/// -Y EXTERNAL -Q << EOF
+	dn: cn=config
+	changeType: modify
+	replace: olcServerID
+	olcServerID: 1 ldap://ldap1.devel.local
+	olcServerID: 2 ldap://ldap2.devel.local
+	EOF
+
+
+Y modificamos los límites, para que el usuario que realizará la réplica no tenga problemas de timeouts o tamaño de entradas:
+
+	ldapadd -H ldapi:/// -Y EXTERNAL -Q << EOF
+	dn: olcDatabase={2}mdb,cn=config
+	changetype: modify
+	add: olcLimits
+	olcLimits: dn.exact="cn=admin,dc=cantv,dc=com,dc=ve" time.soft=unlimited 
+	  time.hard=unlimited size.soft=unlimited size.hard=unlimited
+	-
+	add: olcDbIndex
+	olcDbIndex: entryUUID,entryCSN  eq
+	EOF
+
+
+Habilitamos el Overlay [SyncProv](./SyncProv.markdown) para el Backend del arbol y para cn=config:
+
+	ldapadd -H ldapi:/// -Y EXTERNAL -Q << EOF
+	dn: olcOverlay=syncprov,olcDatabase={2}mdb,cn=config
+	changetype: add
+	objectClass: olcOverlayConfig
+	objectClass: olcSyncProvConfig
+	olcOverlay: syncprov
+	olcSpCheckpoint: 20 10
+	olcSpSessionlog: 500
+	olcSpNoPresent: TRUE
+	EOF
+
+
+	ldapadd -H ldapi:/// -Y EXTERNAL -Q << EOF
+	dn: olcOverlay=syncprov,olcDatabase={0}config,cn=config
+	changetype: add
+	objectClass: olcOverlayConfig
+	objectClass: olcSyncProvConfig
+	olcOverlay: syncprov
+	olcSpCheckpoint: 20 10
+	olcSpSessionlog: 500
+	olcSpNoPresent: TRUE
+	EOF
+
+
+Ahora, habilitamos el RID entre uno y otro servidor, contra cn=config y el backend del árbol primario:
+
+En el servidor1 aplicamos:
+
+	ldapadd -H ldapi:/// -Y EXTERNAL -Q << EOF
+	dn: olcDatabase={0}config,cn=config
+	changetype: modify
+	add: olcSyncRepl
+	olcSyncRepl: rid=001 provider=ldap://ldap2 binddn="cn=admin,cn=config" bindmethod=simple 
+	  credentials=123456 searchbase="cn=config" type=refreshAndPersist retry="5 5 300 5" timeout=3
+	-
+	add: olcMirrorMode
+	olcMirrorMode: TRUE
+	EOF
+
+	ldapadd -H ldapi:/// -Y EXTERNAL -Q << EOF
+	dn: olcDatabase={2}mdb,cn=config
+	changetype: modify
+	add: olcSyncRepl
+	olcSyncRepl: rid=002 provider=ldap://ldap2 binddn="cn=admin,dc=cantv,dc=com,dc=ve" bindmethod=simple
+	  credentials=123456 searchbase="dc=cantv,dc=com,dc=ve" type=refreshAndPersist  interval=00:00:00:10 retry="5 5 300 5" timeout=3
+	-
+	add: olcMirrorMode
+	olcMirrorMode: TRUE
+	EOF
+
+
+Y en el servidor2:
+
+	ldapadd -H ldapi:/// -Y EXTERNAL -Q << EOF
+	dn: olcDatabase={0}config,cn=config
+	changetype: modify
+	add: olcSyncRepl
+	olcSyncRepl: rid=001 provider=ldap://ldap1 binddn="cn=admin,cn=config" bindmethod=simple 
+	  credentials=123456 searchbase="cn=config" type=refreshAndPersist retry="5 5 300 5" timeout=3
+	-
+	add: olcMirrorMode
+	olcMirrorMode: TRUE
+	EOF
+	
+	ldapadd -H ldapi:/// -Y EXTERNAL -Q << EOF
+	dn: olcDatabase={2}mdb,cn=config
+	changetype: modify
+	add: olcSyncRepl
+	olcSyncRepl: rid=002 provider=ldap://ldap1 binddn="cn=admin,dc=cantv,dc=com,dc=ve" bindmethod=simple
+	  credentials=123456 searchbase="dc=cantv,dc=com,dc=ve" type=refreshAndPersist  interval=00:00:00:10 retry="5 5 300 5" timeout=3
+	-
+	add: olcMirrorMode
+	olcMirrorMode: TRUE
+	EOF
+	
+Reiniciamos en ámbos servidores:
+
+``service slapd restart``
+
+Podemos verificar la replicación, creando una entrada en ldap1 y verificando que dicha entrada aparece en ldap2:
+
+en ldap1:
+
+	ldapadd -H ldapi:/// -x -D cn=admin,dc=cantv,dc=com,dc=ve -W << EOF
+	dn: ou=services,dc=cantv,dc=com,dc=ve
+	objectClass: top
+	objectClass: organizationalUnit
+	ou: services
+	description: Services and Apps
+	EOF
+
+
+En ldap2:
+
+	ldapsearch -H ldaps://localhost -b dc=cantv,dc=com,dc=ve -D cn=admin,dc=cantv,dc=com,dc=ve -W -s sub '(ou=services)' -x -LLL
+	Enter LDAP Password: 
+	dn: ou=services,dc=cantv,dc=com,dc=ve
+	objectClass: top
+	objectClass: organizationalUnit
+	ou: services
+	description: Services and Apps
